@@ -1,0 +1,87 @@
+pipeline {
+    agent any
+    tools {
+        // Define JDK and NodeJS tools
+        jdk 'jdk17'
+        nodejs 'Nodejs16'
+    }
+    environment {
+        // Define environment variable for SonarScanner
+        SCANNER_HOME = tool 'sonar-scanner'
+    }
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                // Clean workspace before starting
+                cleanWs()
+            }
+        }
+        stage('Checkout from Git') {
+            steps {
+                // Checkout code from Git repository
+                git branch: 'main', url: 'https://github.com/sanjukuruvilla/Zomato-Clone.git'
+            }
+        }
+        stage('Sonarqube Analysis') {
+            steps {
+                // Execute SonarQube analysis
+                withSonarQubeEnv('sonar-server') {
+                    sh """${SCANNER_HOME}/bin/sonar-scanner -Dsonar.projectName=zomato \
+                        -Dsonar.projectKey=zomato"""
+                }
+            }
+        }
+        stage('Quality Gate') {
+            steps {
+                script {
+                    // Wait for Quality Gate to complete
+                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token'
+                }
+            }
+        }
+        stage('Install Dependencies') {
+            steps {
+                // Install dependencies using npm
+                sh "npm install"
+            }
+        }
+        stage('OWASP FS SCAN') {
+            steps {
+                // Perform OWASP dependency check
+                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
+                // Publish dependency check report
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+        stage('TRIVY FS SCAN') {
+            steps {
+                // Perform Trivy file system scan
+                sh "trivy fs . > trivyfs.txt"
+            }
+        }
+        stage('Docker Build & Push') {
+            steps {
+                // Build Docker image and push to registry
+                script {
+                    withDockerRegistry(credentialsId: 'dockerhub', toolName: 'docker') {
+                        sh "docker build -t zomato ."
+                        sh "docker tag zomato leescoresby/zomato:latest " 
+                        sh "docker push leescoresby/zomato:latest " 
+                    }
+                }
+            }
+        }
+        stage('TRIVY') {
+            steps {
+                // Perform Trivy image scan
+                sh "trivy image leescoresby/zomato:latest > trivy.txt" 
+            }
+        }
+        stage('Deploy to container') {
+            steps {
+                // Deploy Docker container
+                sh 'docker run -d --name zomato -p 3000:3000 leescoresby/zomato:latest'
+            }
+        }
+    }
+}
